@@ -41,6 +41,45 @@ class ApiController extends Controller
     }
 
     /**
+     * GET /api/bookings
+     *
+     * Optional query params:
+     *   ?search=text     — filter by reference or property name
+     *   ?status=Confirmed — filter by status
+     *   ?channel=Airbnb  — filter by channel
+     */
+    public function bookings(Request $request): JsonResponse
+    {
+        $query = Booking::with('property:id,name');
+
+        if ($search = $request->input('search')) {
+            $lower = '%' . mb_strtolower($search) . '%';
+            $query->where(function ($q) use ($lower) {
+                $q->whereRaw('LOWER(avantio_reference) LIKE ?', [$lower])
+                  ->orWhereRaw('LOWER(avantio_id) LIKE ?', [$lower])
+                  ->orWhereHas('property', function ($pq) use ($lower) {
+                      $pq->whereRaw('LOWER(name) LIKE ?', [$lower]);
+                  });
+            });
+        }
+
+        if ($status = $request->input('status')) {
+            $query->where('status', $status);
+        }
+
+        if ($channel = $request->input('channel')) {
+            $query->where('channel', $channel);
+        }
+
+        $bookings = $query->orderByDesc('check_in')->get();
+
+        return response()->json([
+            'data' => $bookings,
+            'total' => $bookings->count(),
+        ]);
+    }
+
+    /**
      * GET /api/stats
      *
      * Returns dashboard summary statistics.

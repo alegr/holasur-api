@@ -12,4 +12,5 @@ Route::get('/import/logs', [ImportController::class, 'logs']);
 
 // Data endpoints
 Route::get('/properties', [ApiController::class, 'properties']);
+Route::get('/bookings', [ApiController::class, 'bookings']);
 Route::get('/stats', [ApiController::class, 'stats']);
