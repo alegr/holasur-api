@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AnalyticsController;
 use App\Http\Controllers\ApiController;
 use App\Http\Controllers\CostController;
 use App\Http\Controllers\ImportController;
@@ -31,3 +32,15 @@ Route::get('/expenses', [CostController::class, 'expenseIndex']);
 Route::post('/expenses', [CostController::class, 'expenseStore']);
 Route::get('/expenses/{id}', [CostController::class, 'expenseShow']);
 Route::put('/expenses/{id}', [CostController::class, 'expenseUpdate']);
+
+// Analytics & Reporting
+Route::prefix('analytics')->group(function () {
+    Route::get('/property/{id}/profitability', [AnalyticsController::class, 'propertyProfitability']);
+    Route::get('/properties/ranking', [AnalyticsController::class, 'propertiesRanking']);
+    Route::get('/revenue/by-channel', [AnalyticsController::class, 'revenueByChannel']);
+    Route::get('/revenue/by-month', [AnalyticsController::class, 'revenueByMonth']);
+    Route::get('/revenue/by-property', [AnalyticsController::class, 'revenueByProperty']);
+    Route::get('/costs/summary', [AnalyticsController::class, 'costsSummary']);
+    Route::get('/cashflow', [AnalyticsController::class, 'cashflow']);
+    Route::get('/kpis', [AnalyticsController::class, 'kpis']);
+});
