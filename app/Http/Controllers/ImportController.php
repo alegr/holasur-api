@@ -150,6 +150,21 @@ class ImportController extends Controller
             }
         }
 
+        // Post-import: link bookings to properties by name
+        if ($entity === 'bookings') {
+            $unlinked = Booking::whereNull('property_id')->get();
+            foreach ($unlinked as $b) {
+                $propName = $b->raw_data['property_name'] ?? null;
+                if ($propName) {
+                    $prop = Property::where('name', 'like', "%{$propName}%")->first();
+                    if ($prop) {
+                        $b->property_id = $prop->id;
+                        $b->save();
+                    }
+                }
+            }
+        }
+
         $status = $failed === count($data) ? 'failed' : 'completed';
 
         $importLog->update([
@@ -245,6 +260,15 @@ class ImportController extends Controller
                 $row['location'] = $parts[1];
             }
             // type_location itself will be stored in raw_data via alias mapping
+        }
+
+        // Bookings: resolve property_avantio_id to property_id FK
+        if ($entity === 'bookings' && isset($row['property_avantio_id'])) {
+            $property = Property::where('avantio_id', $row['property_avantio_id'])->first();
+            if ($property) {
+                $row['property_id'] = $property->id;
+            }
+            unset($row['property_avantio_id']);
         }
 
         // Bookings: split dates into check_in + check_out
