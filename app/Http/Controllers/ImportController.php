@@ -256,7 +256,17 @@ class ImportController extends Controller
             if (!isset($row['check_out']) && isset($parts[1])) {
                 $row['check_out'] = $parts[1];
             }
-            // dates itself will be stored in raw_data via alias mapping
+        }
+
+        // Clean numeric fields — strip currency symbols and whitespace
+        foreach (['total_amount', 'amount', 'nights', 'adults', 'children'] as $numField) {
+            if (isset($row[$numField]) && is_string($row[$numField])) {
+                $row[$numField] = preg_replace('/[^\d.,\-]/', '', $row[$numField]);
+                $row[$numField] = str_replace(',', '.', $row[$numField]);
+                if ($row[$numField] === '') {
+                    unset($row[$numField]);
+                }
+            }
         }
 
         return $row;
