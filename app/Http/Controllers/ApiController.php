@@ -41,6 +41,20 @@ class ApiController extends Controller
     }
 
     /**
+     * GET /api/properties/{id}
+     */
+    public function property(int $id): JsonResponse
+    {
+        $property = Property::with(['owner', 'bookings' => function ($q) {
+            $q->orderByDesc('check_in')->limit(50);
+        }])->findOrFail($id);
+
+        $property->is_active = strtolower($property->status ?? '') === 'active';
+
+        return response()->json($property);
+    }
+
+    /**
      * GET /api/bookings
      *
      * Optional query params:
@@ -77,6 +91,16 @@ class ApiController extends Controller
             'data' => $bookings,
             'total' => $bookings->count(),
         ]);
+    }
+
+    /**
+     * GET /api/bookings/{id}
+     */
+    public function booking(int $id): JsonResponse
+    {
+        $booking = Booking::with(['property', 'customer'])->findOrFail($id);
+
+        return response()->json($booking);
     }
 
     /**
