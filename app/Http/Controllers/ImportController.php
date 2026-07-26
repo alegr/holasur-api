@@ -121,9 +121,14 @@ class ImportController extends Controller
                     throw new \InvalidArgumentException("Row {$index} missing avantio_id.");
                 }
 
+                $existing = $modelClass::where('avantio_id', $avantioId)->first();
                 $mapped = $this->mapFields($entity, $row, $knownColumns);
 
-                $existing = $modelClass::where('avantio_id', $avantioId)->first();
+                // Merge raw_data with existing data instead of replacing
+                if ($existing && !empty($mapped['raw_data'])) {
+                    $existingRaw = is_array($existing->raw_data) ? $existing->raw_data : [];
+                    $mapped['raw_data'] = array_merge($existingRaw, $mapped['raw_data']);
+                }
 
                 $modelClass::updateOrCreate(
                     ['avantio_id' => $avantioId],
