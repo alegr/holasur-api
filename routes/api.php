@@ -14,7 +14,9 @@ Route::get('/import/logs', [ImportController::class, 'logs']);
 
 // Data endpoints
 Route::get('/properties', [ApiController::class, 'properties']);
+Route::get('/properties/{id}', [ApiController::class, 'property']);
 Route::get('/bookings', [ApiController::class, 'bookings']);
+Route::get('/bookings/{id}', [ApiController::class, 'booking']);
 Route::get('/stats', [ApiController::class, 'stats']);
 
 // Cost tracking
