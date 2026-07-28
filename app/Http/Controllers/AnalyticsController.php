@@ -596,17 +596,25 @@ class AnalyticsController extends Controller
         // Avg days to collect (avg diff between payment date and booking check_in)
         $avgDaysToCollect = 0;
         $collectJoin = DB::table('avantio_payments')
-            ->join('bookings', 'bookings.avantio_reference', '=', 'avantio_payments.booking_reference')
+            ->join('bookings', function ($join) {
+                $join->on('bookings.avantio_reference', '=', 'avantio_payments.booking_reference')
+                     ->orOn('bookings.avantio_id', '=', 'avantio_payments.booking_reference');
+            })
             ->where('avantio_payments.payment_type', 'received')
-            ->whereNotNull('bookings.check_in');
+            ->whereNotNull('bookings.check_in')
+            ->whereNotNull('avantio_payments.date');
         if ($from) $collectJoin->where('avantio_payments.date', '>=', $from);
         if ($to)   $collectJoin->where('avantio_payments.date', '<=', $to);
 
-        $avgDaysResult = $collectJoin->selectRaw(
-            'AVG(ABS(EXTRACT(EPOCH FROM (avantio_payments.date - bookings.check_in)) / 86400)) as avg_days'
-        )->first();
-        if ($avgDaysResult && $avgDaysResult->avg_days !== null) {
-            $avgDaysToCollect = round((float) $avgDaysResult->avg_days, 1);
+        try {
+            $avgDaysResult = $collectJoin->selectRaw(
+                'AVG(ABS(EXTRACT(EPOCH FROM (avantio_payments.date::timestamp - bookings.check_in::timestamp)) / 86400)) as avg_days'
+            )->first();
+            if ($avgDaysResult && $avgDaysResult->avg_days !== null) {
+                $avgDaysToCollect = round((float) $avgDaysResult->avg_days, 1);
+            }
+        } catch (\Exception $e) {
+            $avgDaysToCollect = 0;
         }
 
         return response()->json([
