@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Route;
 
 // Import endpoints
 Route::post('/import/{entity}', [ImportController::class, 'import'])
-    ->whereIn('entity', ['owners', 'properties', 'customers', 'bookings', 'tasks']);
+    ->whereIn('entity', ['owners', 'properties', 'customers', 'bookings', 'tasks', 'avantio_payments']);
 
 Route::get('/import/logs', [ImportController::class, 'logs']);
 
@@ -34,6 +34,10 @@ Route::get('/expenses', [CostController::class, 'expenseIndex']);
 Route::post('/expenses', [CostController::class, 'expenseStore']);
 Route::get('/expenses/{id}', [CostController::class, 'expenseShow']);
 Route::put('/expenses/{id}', [CostController::class, 'expenseUpdate']);
+
+// Avantio Payments
+Route::get('/avantio-payments', [ApiController::class, 'avantioPayments']);
+Route::get('/avantio-payments/summary', [ApiController::class, 'avantioPaymentsSummary']);
 
 // Analytics & Reporting
 Route::prefix('analytics')->group(function () {
