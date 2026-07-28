@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\AvantioPayment;
 use App\Models\Booking;
 use App\Models\Customer;
 use App\Models\ImportLog;
@@ -39,6 +40,11 @@ class ImportController extends Controller
             'booking_id', 'property_id', 'type', 'responsible',
             'supplier', 'status', 'scheduled_date',
         ],
+        'avantio_payments' => [
+            'payment_type', 'date', 'booking_reference', 'property_code',
+            'description', 'counterpart', 'payment_method', 'amount',
+            'currency', 'state', 'portal', 'observations',
+        ],
     ];
 
     /**
@@ -66,6 +72,9 @@ class ImportController extends Controller
         'tasks' => [
             '_rawText' => null,
         ],
+        'avantio_payments' => [
+            '_rawText' => null,
+        ],
     ];
 
     private const MODEL_MAP = [
@@ -74,6 +83,7 @@ class ImportController extends Controller
         'customers' => Customer::class,
         'bookings' => Booking::class,
         'tasks' => Task::class,
+        'avantio_payments' => AvantioPayment::class,
     ];
 
     /**
@@ -147,6 +157,21 @@ class ImportController extends Controller
                     'error' => $e->getMessage(),
                     'row' => $row ?? null,
                 ]);
+            }
+        }
+
+        // Post-import: link payments to properties by property_code
+        if ($entity === 'avantio_payments') {
+            $unlinked = AvantioPayment::whereNull('property_id')
+                ->whereNotNull('property_code')
+                ->where('property_code', '!=', '')
+                ->get();
+            foreach ($unlinked as $payment) {
+                $prop = Property::where('avantio_id', $payment->property_code)->first();
+                if ($prop) {
+                    $payment->property_id = $prop->id;
+                    $payment->save();
+                }
             }
         }
 

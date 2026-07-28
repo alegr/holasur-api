@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\AvantioPayment;
 use App\Models\Booking;
 use App\Models\ImportLog;
 use App\Models\Property;
@@ -101,6 +102,81 @@ class ApiController extends Controller
         $booking = Booking::with(['property', 'customer'])->findOrFail($id);
 
         return response()->json($booking);
+    }
+
+    /**
+     * GET /api/avantio-payments
+     *
+     * Optional query params:
+     *   ?payment_type=received — filter by type (received, made, pending)
+     *   ?property_code=X      — filter by property code
+     *   ?search=text           — filter by description or counterpart
+     *   ?from=2026-01-01       — filter by date range start
+     *   ?to=2026-12-31         — filter by date range end
+     */
+    public function avantioPayments(Request $request): JsonResponse
+    {
+        $query = AvantioPayment::with('property:id,name');
+
+        if ($type = $request->input('payment_type')) {
+            $query->where('payment_type', $type);
+        }
+
+        if ($code = $request->input('property_code')) {
+            $query->where('property_code', $code);
+        }
+
+        if ($search = $request->input('search')) {
+            $lower = '%' . mb_strtolower($search) . '%';
+            $query->where(function ($q) use ($lower) {
+                $q->whereRaw('LOWER(description) LIKE ?', [$lower])
+                  ->orWhereRaw('LOWER(counterpart) LIKE ?', [$lower])
+                  ->orWhereRaw('LOWER(booking_reference) LIKE ?', [$lower]);
+            });
+        }
+
+        if ($from = $request->input('from')) {
+            $query->where('date', '>=', $from);
+        }
+
+        if ($to = $request->input('to')) {
+            $query->where('date', '<=', $to);
+        }
+
+        $payments = $query->orderByDesc('date')->get();
+
+        return response()->json([
+            'data' => $payments,
+            'total' => $payments->count(),
+        ]);
+    }
+
+    /**
+     * GET /api/avantio-payments/summary
+     *
+     * Returns totals grouped by payment_type.
+     */
+    public function avantioPaymentsSummary(Request $request): JsonResponse
+    {
+        $query = AvantioPayment::query();
+
+        if ($from = $request->input('from')) {
+            $query->where('date', '>=', $from);
+        }
+
+        if ($to = $request->input('to')) {
+            $query->where('date', '<=', $to);
+        }
+
+        $summary = $query
+            ->selectRaw("payment_type, COUNT(*) as count, SUM(amount) as total_amount")
+            ->groupBy('payment_type')
+            ->get()
+            ->keyBy('payment_type');
+
+        return response()->json([
+            'data' => $summary,
+        ]);
     }
 
     /**
