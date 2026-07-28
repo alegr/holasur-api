@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\StandardCost;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -452,6 +453,309 @@ class ReportController extends Controller
                 'properties' => $propertiesList,
             ],
         ]);
+    }
+
+    // ─── Owners List ────────────────────────────────────────
+
+    public function ownersList(Request $request): JsonResponse
+    {
+        [$from, $to] = $this->dateRange($request);
+
+        $owners = DB::table('owners')
+            ->select('owners.id', 'owners.name', 'owners.email', 'owners.phone')
+            ->get();
+
+        $result = [];
+
+        foreach ($owners as $owner) {
+            $properties = DB::table('properties')
+                ->where('owner_id', $owner->id)
+                ->select('id', 'name')
+                ->get();
+
+            $totalRevenue = 0.0;
+            $totalCommission = 0.0;
+            $totalCosts = 0.0;
+
+            foreach ($properties as $prop) {
+                $bq = DB::table('bookings')
+                    ->where('property_id', $prop->id)
+                    ->where('is_revenue', true);
+                if ($from) $bq->where('check_in', '>=', $from);
+                if ($to)   $bq->where('check_in', '<=', $to);
+
+                $bookings = $bq->select('id', 'total_amount', 'raw_data')->get();
+
+                foreach ($bookings as $b) {
+                    $total = (float) ($b->total_amount ?? 0);
+                    $rawData = json_decode($b->raw_data, true) ?? [];
+                    $csv = $rawData['_csv'] ?? [];
+                    $csvTotal = $this->csvFloat($csv['Booking total with tax'] ?? null);
+                    if ($csvTotal > 0) $total = $csvTotal;
+                    $commission = $this->csvFloat($csv['Portal/Intermediary Commission: calculated commission'] ?? null);
+
+                    $totalRevenue += $total;
+                    $totalCommission += $commission;
+                }
+
+                $cq = DB::table('purchases')->where('property_id', $prop->id);
+                if ($from) $cq->where('receipt_date', '>=', $from);
+                if ($to)   $cq->where('receipt_date', '<=', $to);
+                $totalCosts += (float) $cq->sum('total');
+
+                $eq = DB::table('expenses')->where('property_id', $prop->id);
+                if ($from) $eq->where('due_date', '>=', $from);
+                if ($to)   $eq->where('due_date', '<=', $to);
+                $totalCosts += (float) $eq->sum('amount');
+            }
+
+            $grossMargin = $totalRevenue - $totalCommission;
+            $netMargin = $grossMargin - $totalCosts;
+
+            $result[] = [
+                'id'              => $owner->id,
+                'name'            => $owner->name,
+                'email'           => $owner->email,
+                'phone'           => $owner->phone,
+                'property_count'  => $properties->count(),
+                'total_revenue'   => round($totalRevenue, 2),
+                'total_margin'    => round($netMargin, 2),
+            ];
+        }
+
+        usort($result, fn($a, $b) => $b['total_revenue'] <=> $a['total_revenue']);
+
+        return response()->json(['data' => $result]);
+    }
+
+    // ─── Structural Cost Proration ──────────────────────────
+
+    public function proration(Request $request): JsonResponse
+    {
+        $request->validate([
+            'month'  => 'required|string|regex:/^\d{4}-\d{2}$/',
+            'method' => 'required|in:revenue,nights,equal',
+        ]);
+
+        $month = $request->input('month');
+        $method = $request->input('method');
+
+        // Total structural costs for the month
+        $totalStructural = (float) DB::table('purchases')
+            ->where('imputation_type', 'structure')
+            ->where('accounting_month', $month)
+            ->sum('total');
+
+        // Determine active properties: those with at least one revenue booking
+        // whose check_in falls in the given month
+        $monthStart = $month . '-01';
+        $monthEnd = Carbon::parse($monthStart)->endOfMonth()->toDateString();
+
+        $properties = DB::table('properties')
+            ->select('properties.id', 'properties.name')
+            ->join('bookings', 'bookings.property_id', '=', 'properties.id')
+            ->where('bookings.is_revenue', true)
+            ->whereBetween('bookings.check_in', [$monthStart, $monthEnd])
+            ->distinct()
+            ->get();
+
+        if ($properties->isEmpty()) {
+            return response()->json([
+                'data' => [],
+                'total_structural' => $totalStructural,
+                'method' => $method,
+                'month' => $month,
+            ]);
+        }
+
+        // Calculate share metric for each property
+        $metrics = [];
+        $totalMetric = 0.0;
+
+        foreach ($properties as $prop) {
+            $bq = DB::table('bookings')
+                ->where('property_id', $prop->id)
+                ->where('is_revenue', true)
+                ->whereBetween('check_in', [$monthStart, $monthEnd]);
+
+            if ($method === 'revenue') {
+                $bookings = $bq->select('total_amount', 'raw_data')->get();
+                $value = 0.0;
+                foreach ($bookings as $b) {
+                    $total = (float) ($b->total_amount ?? 0);
+                    $rawData = json_decode($b->raw_data, true) ?? [];
+                    $csv = $rawData['_csv'] ?? [];
+                    $csvTotal = $this->csvFloat($csv['Booking total with tax'] ?? null);
+                    if ($csvTotal > 0) $total = $csvTotal;
+                    $value += $total;
+                }
+            } elseif ($method === 'nights') {
+                $value = (float) $bq->sum('nights');
+            } else { // equal
+                $value = 1.0;
+            }
+
+            $metrics[$prop->id] = [
+                'property_id'   => $prop->id,
+                'property_name' => $prop->name,
+                'metric'        => $value,
+            ];
+            $totalMetric += $value;
+        }
+
+        // Build result
+        $result = [];
+        foreach ($metrics as $m) {
+            $sharePercent = $totalMetric > 0 ? round($m['metric'] / $totalMetric * 100, 2) : 0;
+            $allocated = $totalMetric > 0 ? round($totalStructural * $m['metric'] / $totalMetric, 2) : 0;
+
+            $result[] = [
+                'property_id'      => $m['property_id'],
+                'property_name'    => $m['property_name'],
+                'share_percent'    => $sharePercent,
+                'allocated_amount' => $allocated,
+            ];
+        }
+
+        usort($result, fn($a, $b) => $b['share_percent'] <=> $a['share_percent']);
+
+        return response()->json([
+            'data' => $result,
+            'total_structural' => $totalStructural,
+            'method' => $method,
+            'month' => $month,
+        ]);
+    }
+
+    // ─── Standard Costs CRUD ────────────────────────────────
+
+    public function standardCostsIndex(Request $request): JsonResponse
+    {
+        $request->validate([
+            'property_id' => 'required|exists:properties,id',
+        ]);
+
+        $standards = StandardCost::with('costCategory')
+            ->where('property_id', $request->input('property_id'))
+            ->get()
+            ->map(fn($s) => [
+                'id'               => $s->id,
+                'property_id'      => $s->property_id,
+                'cost_category_id' => $s->cost_category_id,
+                'category_name'    => $s->costCategory?->name ?? '--',
+                'standard_amount'  => (float) $s->standard_amount,
+            ]);
+
+        return response()->json(['data' => $standards]);
+    }
+
+    public function standardCostsStore(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'items' => 'required|array|min:1',
+            'items.*.property_id'      => 'required|exists:properties,id',
+            'items.*.cost_category_id' => 'required|exists:cost_categories,id',
+            'items.*.standard_amount'  => 'required|numeric|min:0',
+        ]);
+
+        $saved = 0;
+        foreach ($validated['items'] as $item) {
+            StandardCost::updateOrCreate(
+                [
+                    'property_id'      => $item['property_id'],
+                    'cost_category_id' => $item['cost_category_id'],
+                ],
+                [
+                    'standard_amount' => $item['standard_amount'],
+                ]
+            );
+            $saved++;
+        }
+
+        return response()->json([
+            'message' => "Se guardaron {$saved} costos estándar.",
+            'saved' => $saved,
+        ], 201);
+    }
+
+    // ─── Cost Deviations ────────────────────────────────────
+
+    public function deviations(Request $request): JsonResponse
+    {
+        $request->validate([
+            'property_id' => 'required|exists:properties,id',
+            'from'        => 'nullable|date',
+            'to'          => 'nullable|date',
+        ]);
+
+        $propertyId = $request->input('property_id');
+        [$from, $to] = $this->dateRange($request);
+
+        // Standard costs for this property
+        $standards = StandardCost::with('costCategory')
+            ->where('property_id', $propertyId)
+            ->get()
+            ->keyBy('cost_category_id');
+
+        // Actual costs by category for this property
+        $actualQuery = DB::table('purchase_items')
+            ->join('purchases', 'purchases.id', '=', 'purchase_items.purchase_id')
+            ->where('purchases.property_id', $propertyId);
+        if ($from) $actualQuery->where('purchases.receipt_date', '>=', $from);
+        if ($to)   $actualQuery->where('purchases.receipt_date', '<=', $to);
+
+        $actuals = $actualQuery
+            ->select('purchase_items.cost_category_id')
+            ->selectRaw('COALESCE(SUM(purchase_items.total), 0) as total')
+            ->groupBy('purchase_items.cost_category_id')
+            ->get()
+            ->keyBy('cost_category_id');
+
+        // Also include expenses
+        $expenseQuery = DB::table('expenses')
+            ->where('property_id', $propertyId);
+        if ($from) $expenseQuery->where('due_date', '>=', $from);
+        if ($to)   $expenseQuery->where('due_date', '<=', $to);
+
+        $expenseActuals = $expenseQuery
+            ->select('cost_category_id')
+            ->selectRaw('COALESCE(SUM(amount), 0) as total')
+            ->whereNotNull('cost_category_id')
+            ->groupBy('cost_category_id')
+            ->get()
+            ->keyBy('cost_category_id');
+
+        // Merge all category IDs
+        $categoryIds = $standards->keys()
+            ->merge($actuals->keys())
+            ->merge($expenseActuals->keys())
+            ->unique();
+
+        // Get category names
+        $categoryNames = DB::table('cost_categories')
+            ->whereIn('id', $categoryIds)
+            ->pluck('name', 'id');
+
+        $result = [];
+        foreach ($categoryIds as $catId) {
+            $standard = $standards->has($catId) ? (float) $standards[$catId]->standard_amount : 0;
+            $actual = (float) ($actuals[$catId]->total ?? 0) + (float) ($expenseActuals[$catId]->total ?? 0);
+            $deviation = $actual - $standard;
+            $deviationPercent = $standard > 0 ? round($deviation / $standard * 100, 2) : ($actual > 0 ? 100.0 : 0.0);
+
+            $result[] = [
+                'cost_category_id' => $catId,
+                'category'         => $categoryNames[$catId] ?? '--',
+                'standard'         => $standard,
+                'actual'           => round($actual, 2),
+                'deviation'        => round($deviation, 2),
+                'deviation_percent' => $deviationPercent,
+            ];
+        }
+
+        usort($result, fn($a, $b) => abs($b['deviation']) <=> abs($a['deviation']));
+
+        return response()->json(['data' => $result]);
     }
 
     // ─── 4. Global P&L ──────────────────────────────────────

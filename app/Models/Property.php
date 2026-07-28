@@ -52,4 +52,9 @@ class Property extends Model
     {
         return $this->hasMany(PropertyIncident::class);
     }
+
+    public function inventory(): HasMany
+    {
+        return $this->hasMany(PropertyInventory::class);
+    }
 }
