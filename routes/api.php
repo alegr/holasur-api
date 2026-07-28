@@ -4,6 +4,7 @@ use App\Http\Controllers\AnalyticsController;
 use App\Http\Controllers\ApiController;
 use App\Http\Controllers\CostController;
 use App\Http\Controllers\ImportController;
+use App\Http\Controllers\QuickCostController;
 use Illuminate\Support\Facades\Route;
 
 // Import endpoints
@@ -34,6 +35,10 @@ Route::get('/expenses', [CostController::class, 'expenseIndex']);
 Route::post('/expenses', [CostController::class, 'expenseStore']);
 Route::get('/expenses/{id}', [CostController::class, 'expenseShow']);
 Route::put('/expenses/{id}', [CostController::class, 'expenseUpdate']);
+
+// Quick cost (simplified inline cost entry)
+Route::post('/quick-cost', [QuickCostController::class, 'store']);
+Route::get('/quick-cost/recent', [QuickCostController::class, 'recent']);
 
 // Avantio Payments
 Route::get('/avantio-payments', [ApiController::class, 'avantioPayments']);
