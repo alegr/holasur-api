@@ -54,7 +54,7 @@ class PopulateOwners extends Command
         foreach (array_keys($ownerNames) as $name) {
             $owner = Owner::firstOrCreate(
                 ['name' => $name],
-                ['name' => $name],
+                ['name' => $name, 'avantio_id' => 'owner-' . md5($name)],
             );
 
             if ($owner->wasRecentlyCreated) {
