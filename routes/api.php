@@ -55,3 +55,5 @@ Route::prefix('analytics')->group(function () {
     Route::get('/cashflow', [AnalyticsController::class, 'cashflow']);
     Route::get('/kpis', [AnalyticsController::class, 'kpis']);
 });
+
+Route::get('/exchange-rate', [\App\Http\Controllers\ExchangeRateController::class, 'current']);
