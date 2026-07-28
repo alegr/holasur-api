@@ -323,7 +323,138 @@ class ReportController extends Controller
         ]);
     }
 
-    // ─── 3. Global P&L ──────────────────────────────────────
+    // ─── 3. Owner P&L (HS-40) ──────────────────────────────
+
+    public function ownerPnl(Request $request, int $ownerId): JsonResponse
+    {
+        [$from, $to] = $this->dateRange($request);
+
+        // Get the owner
+        $owner = DB::table('owners')
+            ->where('id', $ownerId)
+            ->select('id', 'name', 'email', 'phone')
+            ->first();
+
+        if (!$owner) {
+            return response()->json(['error' => 'Owner not found'], 404);
+        }
+
+        // Get all properties for this owner
+        $properties = DB::table('properties')
+            ->where('owner_id', $ownerId)
+            ->select('id', 'name', 'type', 'location')
+            ->get();
+
+        $propertiesList = [];
+        $totalGrossRevenue = 0.0;
+        $totalCommissions = 0.0;
+        $totalDirectCosts = 0.0;
+        $totalBookingsCount = 0;
+        $totalNightsSold = 0;
+
+        foreach ($properties as $prop) {
+            // Bookings for this property
+            $bq = DB::table('bookings')
+                ->where('property_id', $prop->id)
+                ->where('is_revenue', true);
+            if ($from) $bq->where('check_in', '>=', $from);
+            if ($to)   $bq->where('check_in', '<=', $to);
+
+            $bookings = $bq->select('id', 'total_amount', 'nights', 'raw_data')->get();
+
+            $propRevenue = 0.0;
+            $propCommission = 0.0;
+            $propNights = 0;
+
+            foreach ($bookings as $b) {
+                $total = (float) ($b->total_amount ?? 0);
+                $rawData = json_decode($b->raw_data, true) ?? [];
+                $csv = $rawData['_csv'] ?? [];
+                $csvTotal = $this->csvFloat($csv['Booking total with tax'] ?? null);
+                if ($csvTotal > 0) {
+                    $total = $csvTotal;
+                }
+                $commission = $this->csvFloat($csv['Portal/Intermediary Commission: calculated commission'] ?? null);
+
+                $propRevenue += $total;
+                $propCommission += $commission;
+                $propNights += (int) ($b->nights ?? 0);
+            }
+
+            // Direct costs
+            $cq = DB::table('purchases')
+                ->where('property_id', $prop->id);
+            if ($from) $cq->where('receipt_date', '>=', $from);
+            if ($to)   $cq->where('receipt_date', '<=', $to);
+            $propCosts = (float) $cq->sum('total');
+
+            // Expenses
+            $eq = DB::table('expenses')
+                ->where('property_id', $prop->id);
+            if ($from) $eq->where('due_date', '>=', $from);
+            if ($to)   $eq->where('due_date', '<=', $to);
+            $propExpenses = (float) $eq->sum('amount');
+
+            $propTotalCosts = $propCosts + $propExpenses;
+            $grossMargin = $propRevenue - $propCommission;
+            $netMargin = $grossMargin - $propTotalCosts;
+
+            $propertiesList[] = [
+                'id'              => $prop->id,
+                'name'            => $prop->name,
+                'type'            => $prop->type,
+                'location'        => $prop->location,
+                'bookings_count'  => $bookings->count(),
+                'nights_sold'     => $propNights,
+                'gross_revenue'   => round($propRevenue, 2),
+                'commission'      => round($propCommission, 2),
+                'costs'           => round($propTotalCosts, 2),
+                'gross_margin'    => round($grossMargin, 2),
+                'net_margin'      => round($netMargin, 2),
+            ];
+
+            $totalGrossRevenue += $propRevenue;
+            $totalCommissions += $propCommission;
+            $totalDirectCosts += $propTotalCosts;
+            $totalBookingsCount += $bookings->count();
+            $totalNightsSold += $propNights;
+        }
+
+        // Sort properties by net_margin desc
+        usort($propertiesList, fn($a, $b) => $b['net_margin'] <=> $a['net_margin']);
+
+        $totalGrossMargin = $totalGrossRevenue - $totalCommissions;
+        $totalNetMargin = $totalGrossMargin - $totalDirectCosts;
+        $marginPercent = $totalGrossRevenue > 0
+            ? round($totalNetMargin / $totalGrossRevenue * 100, 2)
+            : 0;
+
+        return response()->json([
+            'data' => [
+                'owner' => [
+                    'id'    => $owner->id,
+                    'name'  => $owner->name,
+                    'email' => $owner->email,
+                    'phone' => $owner->phone,
+                ],
+                'period' => ['from' => $from, 'to' => $to],
+                'totals' => [
+                    'properties_count'  => $properties->count(),
+                    'bookings_count'    => $totalBookingsCount,
+                    'nights_sold'       => $totalNightsSold,
+                    'gross_revenue'     => round($totalGrossRevenue, 2),
+                    'total_commissions' => round($totalCommissions, 2),
+                    'total_costs'       => round($totalDirectCosts, 2),
+                    'gross_margin'      => round($totalGrossMargin, 2),
+                    'net_margin'        => round($totalNetMargin, 2),
+                    'margin_percent'    => $marginPercent,
+                ],
+                'properties' => $propertiesList,
+            ],
+        ]);
+    }
+
+    // ─── 4. Global P&L ──────────────────────────────────────
 
     public function globalPnl(Request $request): JsonResponse
     {

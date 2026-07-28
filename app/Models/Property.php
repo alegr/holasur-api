@@ -47,4 +47,9 @@ class Property extends Model
     {
         return $this->hasMany(Task::class);
     }
+
+    public function incidents(): HasMany
+    {
+        return $this->hasMany(PropertyIncident::class);
+    }
 }

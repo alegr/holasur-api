@@ -349,51 +349,116 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    // ─── 7. Cash Flow ─────────────────────────────────────────
+    // ─── 7. Cash Flow (enhanced – HS-44) ─────────────────────
 
     public function cashflow(Request $request): JsonResponse
     {
+        [$from, $to] = $this->dateRange($request);
         $months = (int) $request->input('months', 6);
-        $today  = Carbon::today()->toDateString();
-        $horizon = Carbon::today()->addMonths($months)->toDateString();
+        $today  = Carbon::today();
 
-        // Upcoming income: bookings with check_in in the future
-        $upcomingIncome = DB::table('bookings')
+        // Determine the range: past months from 'from' (or start of year) to 'months' into the future
+        $periodStart = $from ? Carbon::parse($from)->startOfMonth() : $today->copy()->startOfYear();
+        $periodEnd   = $today->copy()->addMonths($months)->endOfMonth();
+
+        // Build a list of all months in range
+        $allMonths = [];
+        $cursor = $periodStart->copy();
+        while ($cursor->lte($periodEnd)) {
+            $allMonths[] = $cursor->format('Y-m');
+            $cursor->addMonth();
+        }
+
+        // Real income received (avantio_payments type=received)
+        $incomeReceived = DB::table('avantio_payments')
+            ->where('payment_type', 'received')
+            ->where('date', '>=', $periodStart->toDateString())
+            ->where('date', '<=', $periodEnd->toDateString())
+            ->selectRaw("TO_CHAR(date, 'YYYY-MM') as month")
+            ->selectRaw('COALESCE(SUM(amount), 0) as amount')
+            ->groupByRaw("TO_CHAR(date, 'YYYY-MM')")
+            ->pluck('amount', 'month');
+
+        // Real payments made (avantio_payments type=made)
+        $paymentsMade = DB::table('avantio_payments')
+            ->where('payment_type', 'made')
+            ->where('date', '>=', $periodStart->toDateString())
+            ->where('date', '<=', $periodEnd->toDateString())
+            ->selectRaw("TO_CHAR(date, 'YYYY-MM') as month")
+            ->selectRaw('COALESCE(SUM(amount), 0) as amount')
+            ->groupByRaw("TO_CHAR(date, 'YYYY-MM')")
+            ->pluck('amount', 'month');
+
+        // Purchase costs by month
+        $purchasesByMonth = DB::table('purchases')
+            ->where('receipt_date', '>=', $periodStart->toDateString())
+            ->where('receipt_date', '<=', $periodEnd->toDateString())
+            ->selectRaw("TO_CHAR(receipt_date, 'YYYY-MM') as month")
+            ->selectRaw('COALESCE(SUM(total), 0) as amount')
+            ->groupByRaw("TO_CHAR(receipt_date, 'YYYY-MM')")
+            ->pluck('amount', 'month');
+
+        // Expense costs by month
+        $expensesByMonth = DB::table('expenses')
+            ->where('due_date', '>=', $periodStart->toDateString())
+            ->where('due_date', '<=', $periodEnd->toDateString())
+            ->selectRaw("TO_CHAR(due_date, 'YYYY-MM') as month")
+            ->selectRaw('COALESCE(SUM(amount), 0) as amount')
+            ->groupByRaw("TO_CHAR(due_date, 'YYYY-MM')")
+            ->pluck('amount', 'month');
+
+        // Future projected income: bookings with check_in in the future
+        $futureBookings = DB::table('bookings')
             ->where('is_revenue', true)
-            ->where('check_in', '>', $today)
-            ->where('check_in', '<=', $horizon)
+            ->where('check_in', '>', $today->toDateString())
+            ->where('check_in', '<=', $periodEnd->toDateString())
             ->selectRaw("TO_CHAR(check_in, 'YYYY-MM') as month")
-            ->selectRaw('COUNT(*)                       as count')
             ->selectRaw('COALESCE(SUM(total_amount), 0) as amount')
             ->groupByRaw("TO_CHAR(check_in, 'YYYY-MM')")
-            ->orderBy('month')
-            ->get();
+            ->pluck('amount', 'month');
 
-        // Upcoming expenses: unpaid expenses with due_date in the future
-        $upcomingExpenses = DB::table('expenses')
-            ->where('due_date', '>', $today)
-            ->where('due_date', '<=', $horizon)
-            ->where(function ($q) {
-                $q->where('payment_status', '!=', 'paid')
-                  ->orWhereNull('payment_status');
-            })
-            ->selectRaw("TO_CHAR(due_date, 'YYYY-MM') as month")
-            ->selectRaw('COUNT(*)                       as count')
-            ->selectRaw('COALESCE(SUM(amount), 0)       as amount')
-            ->groupByRaw("TO_CHAR(due_date, 'YYYY-MM')")
-            ->orderBy('month')
-            ->get();
+        $todayMonth = $today->format('Y-m');
+        $runningBalance = 0.0;
+        $monthlyData = [];
+
+        foreach ($allMonths as $m) {
+            $isFuture = $m > $todayMonth;
+
+            $income = (float) ($incomeReceived[$m] ?? 0);
+            $paid   = (float) ($paymentsMade[$m] ?? 0);
+            $costs  = (float) ($purchasesByMonth[$m] ?? 0)
+                    + (float) ($expensesByMonth[$m] ?? 0);
+            $projected = (float) ($futureBookings[$m] ?? 0);
+
+            // For future months, add projected booking income
+            if ($isFuture) {
+                $income += $projected;
+            }
+
+            $totalOut = $paid + $costs;
+            $netFlow  = $income - $totalOut;
+            $runningBalance += $netFlow;
+
+            $monthlyData[] = [
+                'month'            => $m,
+                'is_future'        => $isFuture,
+                'income_received'  => round($income, 2),
+                'payments_made'    => round($totalOut, 2),
+                'net_flow'         => round($netFlow, 2),
+                'running_balance'  => round($runningBalance, 2),
+                'projected_income' => $isFuture ? round($projected, 2) : 0,
+            ];
+        }
 
         return response()->json([
             'data' => [
-                'months'             => $months,
-                'upcoming_income'    => $upcomingIncome,
-                'upcoming_expenses'  => $upcomingExpenses,
+                'months'  => $months,
+                'monthly' => $monthlyData,
             ],
         ]);
     }
 
-    // ─── 8. Global KPIs ──────────────────────────────────────
+    // ─── 8. Global KPIs (enhanced – HS-45) ───────────────────
 
     public function kpis(Request $request): JsonResponse
     {
@@ -413,6 +478,25 @@ class AnalyticsController extends Controller
         $totalRevenue  = (float) $revenueStats->total_revenue;
         $totalNights   = (int) $revenueStats->total_nights;
         $totalBookings = (int) $revenueStats->total_bookings;
+
+        // Commission from raw_data
+        $commissionQuery = DB::table('bookings')
+            ->where('is_revenue', true);
+        if ($from) $commissionQuery->where('check_in', '>=', $from);
+        if ($to)   $commissionQuery->where('check_in', '<=', $to);
+        $allBookings = $commissionQuery->select('id', 'total_amount', 'raw_data', 'channel')->get();
+
+        $totalCommission = 0.0;
+        foreach ($allBookings as $b) {
+            $rawData = json_decode($b->raw_data, true) ?? [];
+            $csv = $rawData['_csv'] ?? [];
+            $commVal = $csv['Portal/Intermediary Commission: calculated commission'] ?? null;
+            if ($commVal !== null && $commVal !== '') {
+                $cleaned = preg_replace('/[^\d.,-]/', '', $commVal);
+                $cleaned = str_replace(',', '.', $cleaned);
+                $totalCommission += (float) $cleaned;
+            }
+        }
 
         // Costs
         $pq = DB::table('purchases');
@@ -434,13 +518,41 @@ class AnalyticsController extends Controller
 
         // Avg occupancy
         $days = $this->daysInPeriod($from, $to);
-        $avgOccupancy = $totalProperties > 0
-            ? round($totalNights / ($totalProperties * $days) * 100, 2)
+        $availableNights = $totalProperties * $days;
+        $avgOccupancy = $availableNights > 0
+            ? round($totalNights / $availableNights * 100, 2)
+            : 0;
+
+        // Avg stay
+        $avgStay = $totalBookings > 0
+            ? round($totalNights / $totalBookings, 1)
             : 0;
 
         // Avg nightly rate
         $avgNightlyRate = $totalNights > 0
             ? round($totalRevenue / $totalNights, 2)
+            : 0;
+
+        // Revenue per property
+        $revenuePerProperty = $totalProperties > 0
+            ? round($totalRevenue / $totalProperties, 2)
+            : 0;
+
+        // Gross margin (revenue - commissions)
+        $grossMargin = $totalRevenue - $totalCommission;
+        $grossMarginPercent = $totalRevenue > 0
+            ? round($grossMargin / $totalRevenue * 100, 2)
+            : 0;
+
+        // Net margin
+        $netMargin = $totalRevenue - $totalCommission - $totalCosts;
+        $netMarginPercent = $totalRevenue > 0
+            ? round($netMargin / $totalRevenue * 100, 2)
+            : 0;
+
+        // Avg commission rate
+        $avgCommissionRate = $totalRevenue > 0
+            ? round($totalCommission / $totalRevenue * 100, 2)
             : 0;
 
         // Top channel
@@ -456,16 +568,238 @@ class AnalyticsController extends Controller
             ->orderByDesc('channel_revenue')
             ->first();
 
+        // Top property
+        $tpq = DB::table('bookings')
+            ->join('properties', 'properties.id', '=', 'bookings.property_id')
+            ->where('bookings.is_revenue', true);
+        if ($from) $tpq->where('bookings.check_in', '>=', $from);
+        if ($to)   $tpq->where('bookings.check_in', '<=', $to);
+
+        $topProperty = $tpq
+            ->select('properties.id', 'properties.name')
+            ->selectRaw('COALESCE(SUM(bookings.total_amount), 0) as property_revenue')
+            ->groupBy('properties.id', 'properties.name')
+            ->orderByDesc('property_revenue')
+            ->first();
+
+        // Collection efficiency (received payments / total revenue * 100)
+        $receivedQuery = DB::table('avantio_payments')
+            ->where('payment_type', 'received');
+        if ($from) $receivedQuery->where('date', '>=', $from);
+        if ($to)   $receivedQuery->where('date', '<=', $to);
+        $totalReceived = (float) $receivedQuery->sum('amount');
+
+        $collectionEfficiency = $totalRevenue > 0
+            ? round($totalReceived / $totalRevenue * 100, 2)
+            : 0;
+
+        // Avg days to collect (avg diff between payment date and booking check_in)
+        $avgDaysToCollect = 0;
+        $collectJoin = DB::table('avantio_payments')
+            ->join('bookings', 'bookings.avantio_reference', '=', 'avantio_payments.booking_reference')
+            ->where('avantio_payments.payment_type', 'received')
+            ->whereNotNull('bookings.check_in');
+        if ($from) $collectJoin->where('avantio_payments.date', '>=', $from);
+        if ($to)   $collectJoin->where('avantio_payments.date', '<=', $to);
+
+        $avgDaysResult = $collectJoin->selectRaw(
+            'AVG(ABS(EXTRACT(EPOCH FROM (avantio_payments.date - bookings.check_in)) / 86400)) as avg_days'
+        )->first();
+        if ($avgDaysResult && $avgDaysResult->avg_days !== null) {
+            $avgDaysToCollect = round((float) $avgDaysResult->avg_days, 1);
+        }
+
         return response()->json([
             'data' => [
-                'total_revenue'    => $totalRevenue,
-                'total_costs'      => $totalCosts,
-                'net_margin'       => $totalRevenue - $totalCosts,
-                'total_properties' => $totalProperties,
-                'total_bookings'   => $totalBookings,
-                'avg_occupancy'    => $avgOccupancy,
-                'avg_nightly_rate' => $avgNightlyRate,
-                'top_channel'      => $topChannel?->channel,
+                'total_revenue'         => $totalRevenue,
+                'total_costs'           => $totalCosts,
+                'net_margin'            => $netMargin,
+                'total_properties'      => $totalProperties,
+                'total_bookings'        => $totalBookings,
+                'avg_occupancy'         => $avgOccupancy,
+                'avg_nightly_rate'      => $avgNightlyRate,
+                'top_channel'           => $topChannel?->channel,
+                // Enhanced KPIs (HS-45)
+                'avg_stay'              => $avgStay,
+                'revenue_per_property'  => $revenuePerProperty,
+                'gross_margin'          => $grossMargin,
+                'gross_margin_percent'  => $grossMarginPercent,
+                'net_margin_percent'    => $netMarginPercent,
+                'avg_commission_rate'   => $avgCommissionRate,
+                'total_commission'      => $totalCommission,
+                'top_property'          => $topProperty ? [
+                    'id'      => $topProperty->id,
+                    'name'    => $topProperty->name,
+                    'revenue' => (float) $topProperty->property_revenue,
+                ] : null,
+                'collection_efficiency' => $collectionEfficiency,
+                'avg_days_to_collect'   => $avgDaysToCollect,
+            ],
+        ]);
+    }
+
+    // ─── 9. Enhanced Channel Analysis (HS-42) ────────────────
+
+    public function channels(Request $request): JsonResponse
+    {
+        [$from, $to] = $this->dateRange($request);
+
+        // All revenue bookings with raw_data for commission extraction
+        $bookingsQuery = DB::table('bookings')
+            ->where('is_revenue', true);
+        if ($from) $bookingsQuery->where('check_in', '>=', $from);
+        if ($to)   $bookingsQuery->where('check_in', '<=', $to);
+
+        $allBookings = $bookingsQuery
+            ->select('id', 'channel', 'total_amount', 'nights', 'property_id', 'raw_data')
+            ->get();
+
+        $channelMap = [];
+
+        foreach ($allBookings as $b) {
+            $ch = $b->channel ?: 'Desconocido';
+
+            $rawData = json_decode($b->raw_data, true) ?? [];
+            $csv = $rawData['_csv'] ?? [];
+            $commVal = $csv['Portal/Intermediary Commission: calculated commission'] ?? null;
+            $commission = 0.0;
+            if ($commVal !== null && $commVal !== '') {
+                $cleaned = preg_replace('/[^\d.,-]/', '', $commVal);
+                $cleaned = str_replace(',', '.', $cleaned);
+                $commission = (float) $cleaned;
+            }
+
+            if (!isset($channelMap[$ch])) {
+                $channelMap[$ch] = [
+                    'channel'          => $ch,
+                    'bookings_count'   => 0,
+                    'total_revenue'    => 0.0,
+                    'total_commission' => 0.0,
+                    'total_nights'     => 0,
+                    'booking_ids'      => [],
+                ];
+            }
+
+            $channelMap[$ch]['bookings_count'] += 1;
+            $channelMap[$ch]['total_revenue']  += (float) ($b->total_amount ?? 0);
+            $channelMap[$ch]['total_commission'] += $commission;
+            $channelMap[$ch]['total_nights']   += (int) ($b->nights ?? 0);
+            $channelMap[$ch]['booking_ids'][]   = $b->id;
+        }
+
+        $grandTotalRevenue = array_sum(array_column($channelMap, 'total_revenue'));
+
+        // Get costs allocated to bookings per channel
+        $result = [];
+        foreach ($channelMap as $ch => $data) {
+            // Direct costs for these bookings
+            $channelCosts = 0.0;
+            if (!empty($data['booking_ids'])) {
+                $channelCosts = (float) DB::table('purchases')
+                    ->whereIn('booking_id', $data['booking_ids'])
+                    ->sum('total');
+            }
+
+            $netRevenue = $data['total_revenue'] - $data['total_commission'] - $channelCosts;
+
+            $result[] = [
+                'channel'              => $data['channel'],
+                'bookings_count'       => $data['bookings_count'],
+                'total_revenue'        => round($data['total_revenue'], 2),
+                'total_commission'     => round($data['total_commission'], 2),
+                'total_costs'          => round($channelCosts, 2),
+                'net_revenue'          => round($netRevenue, 2),
+                'avg_booking_value'    => $data['bookings_count'] > 0
+                    ? round($data['total_revenue'] / $data['bookings_count'], 2)
+                    : 0,
+                'avg_nights'           => $data['bookings_count'] > 0
+                    ? round($data['total_nights'] / $data['bookings_count'], 1)
+                    : 0,
+                'market_share_percent' => $grandTotalRevenue > 0
+                    ? round($data['total_revenue'] / $grandTotalRevenue * 100, 2)
+                    : 0,
+            ];
+        }
+
+        // Sort by net_revenue desc
+        usort($result, fn($a, $b) => $b['net_revenue'] <=> $a['net_revenue']);
+
+        return response()->json(['data' => $result]);
+    }
+
+    // ─── 10. Payment Methods Analysis (HS-43) ────────────────
+
+    public function paymentMethods(Request $request): JsonResponse
+    {
+        [$from, $to] = $this->dateRange($request);
+
+        // Group by payment_method and payment_type
+        $query = DB::table('avantio_payments');
+        if ($from) $query->where('date', '>=', $from);
+        if ($to)   $query->where('date', '<=', $to);
+
+        // Total amount for percentage calculation
+        $totalAmount = (float) (clone $query)->sum('amount');
+
+        // By payment type
+        $byType = [];
+        foreach (['received', 'made'] as $type) {
+            $typeQuery = (clone $query)->where('payment_type', $type);
+
+            $methods = (clone $typeQuery)
+                ->select('payment_method')
+                ->selectRaw('COUNT(*) as count')
+                ->selectRaw('COALESCE(SUM(amount), 0) as total_amount')
+                ->selectRaw('COALESCE(AVG(amount), 0) as avg_amount')
+                ->groupBy('payment_method')
+                ->orderByDesc('total_amount')
+                ->get();
+
+            $typeTotal = $methods->sum('total_amount');
+
+            $byType[$type] = $methods->map(function ($row) use ($typeTotal) {
+                $total = (float) $row->total_amount;
+                return [
+                    'payment_method'      => $row->payment_method ?: 'Sin especificar',
+                    'count'               => (int) $row->count,
+                    'total_amount'        => round($total, 2),
+                    'avg_amount'          => round((float) $row->avg_amount, 2),
+                    'percentage_of_type'  => $typeTotal > 0
+                        ? round($total / $typeTotal * 100, 2)
+                        : 0,
+                ];
+            })->values()->toArray();
+        }
+
+        // Overall by payment_method (all types combined)
+        $overall = (clone $query)
+            ->select('payment_method')
+            ->selectRaw('COUNT(*) as count')
+            ->selectRaw('COALESCE(SUM(amount), 0) as total_amount')
+            ->selectRaw('COALESCE(AVG(amount), 0) as avg_amount')
+            ->groupBy('payment_method')
+            ->orderByDesc('total_amount')
+            ->get()
+            ->map(function ($row) use ($totalAmount) {
+                $total = (float) $row->total_amount;
+                return [
+                    'payment_method'       => $row->payment_method ?: 'Sin especificar',
+                    'count'                => (int) $row->count,
+                    'total_amount'         => round($total, 2),
+                    'avg_amount'           => round((float) $row->avg_amount, 2),
+                    'percentage_of_total'  => $totalAmount > 0
+                        ? round($total / $totalAmount * 100, 2)
+                        : 0,
+                ];
+            })
+            ->values()
+            ->toArray();
+
+        return response()->json([
+            'data' => [
+                'total_amount' => round($totalAmount, 2),
+                'overall'      => $overall,
+                'by_type'      => $byType,
             ],
         ]);
     }

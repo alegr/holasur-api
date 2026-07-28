@@ -5,6 +5,7 @@ use App\Http\Controllers\ApiController;
 use App\Http\Controllers\CostController;
 use App\Http\Controllers\ImportController;
 use App\Http\Controllers\BatchCostController;
+use App\Http\Controllers\OperationalController;
 use App\Http\Controllers\QuickCostController;
 use App\Http\Controllers\ReportController;
 use Illuminate\Support\Facades\Route;
@@ -64,6 +65,8 @@ Route::prefix('analytics')->group(function () {
     Route::get('/costs/summary', [AnalyticsController::class, 'costsSummary']);
     Route::get('/cashflow', [AnalyticsController::class, 'cashflow']);
     Route::get('/kpis', [AnalyticsController::class, 'kpis']);
+    Route::get('/channels', [AnalyticsController::class, 'channels']);
+    Route::get('/payment-methods', [AnalyticsController::class, 'paymentMethods']);
 });
 
 // P&L Reports
@@ -71,6 +74,16 @@ Route::prefix('reports')->group(function () {
     Route::get('/pnl/booking/{id}', [ReportController::class, 'bookingPnl']);
     Route::get('/pnl/property/{id}', [ReportController::class, 'propertyPnl']);
     Route::get('/pnl/global', [ReportController::class, 'globalPnl']);
+    Route::get('/pnl/owner/{id}', [ReportController::class, 'ownerPnl']);
 });
+
+// Operational management
+Route::get('/booking-operations/{bookingId}', [OperationalController::class, 'getOperation']);
+Route::post('/booking-operations/{bookingId}', [OperationalController::class, 'createOperation']);
+Route::put('/booking-operations/{bookingId}', [OperationalController::class, 'updateOperation']);
+
+Route::get('/property-incidents', [OperationalController::class, 'listIncidents']);
+Route::post('/property-incidents', [OperationalController::class, 'createIncident']);
+Route::put('/property-incidents/{id}', [OperationalController::class, 'updateIncident']);
 
 Route::get('/exchange-rate', [\App\Http\Controllers\ExchangeRateController::class, 'current']);
