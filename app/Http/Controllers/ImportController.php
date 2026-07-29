@@ -46,6 +46,11 @@ class ImportController extends Controller
             'description', 'counterpart', 'payment_method', 'amount',
             'currency', 'state', 'portal', 'observations',
         ],
+        'invoices' => [
+            'invoice_number', 'date', 'due_date', 'type', 'status',
+            'booking_reference', 'property_code', 'customer_name',
+            'subtotal', 'tax_amount', 'total', 'currency', 'description',
+        ],
     ];
 
     /**
@@ -75,11 +80,6 @@ class ImportController extends Controller
         ],
         'avantio_payments' => [
             '_rawText' => null,
-        ],
-        'invoices' => [
-            'invoice_number', 'date', 'due_date', 'type', 'status',
-            'booking_reference', 'property_code', 'customer_name',
-            'subtotal', 'tax_amount', 'total', 'currency', 'description',
         ],
     ];
 

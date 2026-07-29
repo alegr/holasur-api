@@ -23,7 +23,7 @@ Route::get('/user', [AuthController::class, 'user']);
 
 // Import endpoints
 Route::post('/import/{entity}', [ImportController::class, 'import'])
-    ->whereIn('entity', ['owners', 'properties', 'customers', 'bookings', 'tasks', 'avantio_payments']);
+    ->whereIn('entity', ['owners', 'properties', 'customers', 'bookings', 'tasks', 'avantio_payments', 'invoices']);
 
 Route::get('/import/logs', [ImportController::class, 'logs']);
 
