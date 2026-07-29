@@ -8,6 +8,7 @@ use App\Models\Customer;
 use App\Models\ImportLog;
 use App\Models\Owner;
 use App\Models\Property;
+use App\Models\Invoice;
 use App\Models\Task;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -75,6 +76,11 @@ class ImportController extends Controller
         'avantio_payments' => [
             '_rawText' => null,
         ],
+        'invoices' => [
+            'invoice_number', 'date', 'due_date', 'type', 'status',
+            'booking_reference', 'property_code', 'customer_name',
+            'subtotal', 'tax_amount', 'total', 'currency', 'description',
+        ],
     ];
 
     private const MODEL_MAP = [
@@ -84,6 +90,7 @@ class ImportController extends Controller
         'bookings' => Booking::class,
         'tasks' => Task::class,
         'avantio_payments' => AvantioPayment::class,
+        'invoices' => Invoice::class,
     ];
 
     /**

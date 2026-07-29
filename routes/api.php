@@ -92,6 +92,10 @@ Route::post('/owners', [OwnerController::class, 'store']);
 Route::get('/owners/{id}', [OwnerController::class, 'show']);
 Route::put('/owners/{id}', [OwnerController::class, 'update']);
 
+// Invoices
+Route::get('/invoices', fn () => \App\Models\Invoice::orderBy('date', 'desc')->paginate(50));
+Route::get('/invoices/{id}', fn ($id) => \App\Models\Invoice::findOrFail($id));
+
 // Standard costs
 Route::get('/standard-costs', [ReportController::class, 'standardCostsIndex']);
 Route::post('/standard-costs', [ReportController::class, 'standardCostsStore']);
