@@ -32,6 +32,16 @@ Route::get('/properties', [ApiController::class, 'properties']);
 Route::get('/properties/{id}', [ApiController::class, 'property']);
 Route::get('/bookings', [ApiController::class, 'bookings']);
 Route::get('/bookings/{id}', [ApiController::class, 'booking']);
+Route::get('/bookings/{id}/services', fn ($id) => \App\Models\BookingService::where('booking_id', $id)->get());
+Route::post('/bookings/{id}/services', function (\Illuminate\Http\Request $request, $id) {
+    $booking = \App\Models\Booking::findOrFail($id);
+    $booking->services()->delete(); // Replace all services
+    $services = [];
+    foreach ($request->input('data', []) as $item) {
+        $services[] = $booking->services()->create($item);
+    }
+    return response()->json(['status' => 'ok', 'count' => count($services)]);
+});
 Route::get('/stats', [ApiController::class, 'stats']);
 
 // Property Inventory
