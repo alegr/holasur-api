@@ -211,7 +211,7 @@ class ImportController extends Controller
                     $unitPrice = (float) preg_replace('/[^0-9.\-]/', '', $s['price_label'] ?? '0');
                     $booking->services()->create([
                         'category' => $s['category'] ?? 'service',
-                        'concept' => $s['concept'] ?? '',
+                        'concept' => mb_substr($s['concept'] ?? '', 0, 200),
                         'price_label' => $s['price_label'] ?? null,
                         'quantity' => $s['quantity'] ?? null,
                         'tax' => $s['tax'] ?? null,
