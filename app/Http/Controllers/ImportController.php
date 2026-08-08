@@ -182,7 +182,7 @@ class ImportController extends Controller
             }
         }
 
-        // Post-import: link bookings to properties by name
+        // Post-import: link bookings to properties by name + save services from detail
         if ($entity === 'bookings') {
             $unlinked = Booking::whereNull('property_id')->get();
             foreach ($unlinked as $b) {
@@ -194,6 +194,34 @@ class ImportController extends Controller
                         $b->save();
                     }
                 }
+            }
+
+            // Save booking services from detail scrape (_detail._services)
+            foreach ($data as $row) {
+                $services = $row['_detail']['_services'] ?? [];
+                if (empty($services)) continue;
+                $avantioId = $row['avantio_id'] ?? null;
+                if (!$avantioId) continue;
+                $booking = Booking::where('avantio_id', $avantioId)->first();
+                if (!$booking) continue;
+
+                $booking->services()->delete();
+                foreach ($services as $s) {
+                    $total = (float) preg_replace('/[^0-9.\-]/', '', $s['total'] ?? '0');
+                    $unitPrice = (float) preg_replace('/[^0-9.\-]/', '', $s['price_label'] ?? '0');
+                    $booking->services()->create([
+                        'category' => $s['category'] ?? 'service',
+                        'concept' => $s['concept'] ?? '',
+                        'price_label' => $s['price_label'] ?? null,
+                        'quantity' => $s['quantity'] ?? null,
+                        'tax' => $s['tax'] ?? null,
+                        'total' => $total,
+                        'unit_price' => $unitPrice ?: null,
+                        'currency' => str_contains($s['total'] ?? '', '€') ? 'EUR' : 'USD',
+                        'charge_moment' => $s['charge_moment'] ?? null,
+                    ]);
+                }
+                Log::info("Saved " . count($services) . " services for booking {$avantioId}");
             }
         }
 

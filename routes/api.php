@@ -35,9 +35,11 @@ Route::get('/bookings/{id}', [ApiController::class, 'booking']);
 Route::get('/bookings/{id}/services', fn ($id) => \App\Models\BookingService::where('booking_id', $id)->get());
 Route::post('/bookings/{id}/services', function (\Illuminate\Http\Request $request, $id) {
     $booking = \App\Models\Booking::findOrFail($id);
+    $data = $request->input('data', []);
+    \Illuminate\Support\Facades\Log::info('BookingServices POST', ['booking_id' => $id, 'data_count' => count($data), 'content_type' => $request->header('Content-Type'), 'raw' => $request->getContent()]);
     $booking->services()->delete(); // Replace all services
     $services = [];
-    foreach ($request->input('data', []) as $item) {
+    foreach ($data as $item) {
         $services[] = $booking->services()->create($item);
     }
     return response()->json(['status' => 'ok', 'count' => count($services)]);
