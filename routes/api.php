@@ -36,15 +36,61 @@ Route::get('/bookings/{id}/services', fn ($id) => \App\Models\BookingService::wh
 Route::post('/bookings/{id}/services', function (\Illuminate\Http\Request $request, $id) {
     $booking = \App\Models\Booking::findOrFail($id);
     $data = $request->input('data', []);
-    \Illuminate\Support\Facades\Log::info('BookingServices POST', ['booking_id' => $id, 'data_count' => count($data), 'content_type' => $request->header('Content-Type'), 'raw' => $request->getContent()]);
-    $booking->services()->delete(); // Replace all services
+    $replace = $request->input('replace', true); // default: replace all
+    if ($replace) $booking->services()->delete();
     $services = [];
     foreach ($data as $item) {
+        // Link to catalog if concept matches
+        if (!isset($item['service_catalog_id']) && isset($item['concept'])) {
+            $catalog = \App\Models\ServiceCatalog::where('name', $item['concept'])->first();
+            if ($catalog) {
+                $item['service_catalog_id'] = $catalog->id;
+                // Auto-populate cost if not overridden
+                if (empty($item['cost_override']) && $catalog->default_unit_cost) {
+                    $item['unit_cost'] = $catalog->default_unit_cost;
+                    $total = (float) ($item['total'] ?? 0);
+                    $unitPrice = $catalog->default_unit_price ?: (float) preg_replace('/[^0-9.]/', '', $item['price_label'] ?? '0');
+                    $item['cost_units'] = $unitPrice > 0 ? round($total / $unitPrice, 2) : 1;
+                    $item['total_cost'] = round($item['unit_cost'] * $item['cost_units'], 2);
+                }
+            }
+        }
         $services[] = $booking->services()->create($item);
     }
     return response()->json(['status' => 'ok', 'count' => count($services)]);
 });
+Route::put('/bookings/{bookingId}/services/{id}', function (\Illuminate\Http\Request $request, $bookingId, $id) {
+    $service = \App\Models\BookingService::where('booking_id', $bookingId)->findOrFail($id);
+    $service->update($request->only(['concept', 'unit_cost', 'cost_units', 'total_cost', 'cost_override', 'service_catalog_id', 'price_label', 'quantity', 'tax', 'total', 'charge_moment']));
+    return response()->json($service);
+});
 Route::get('/stats', [ApiController::class, 'stats']);
+
+// Service Catalog
+Route::get('/service-catalog', fn () => \App\Models\ServiceCatalog::orderBy('name')->get());
+Route::post('/service-catalog', function (\Illuminate\Http\Request $request) {
+    $item = \App\Models\ServiceCatalog::updateOrCreate(
+        ['name' => $request->input('name')],
+        $request->only(['category', 'default_unit_cost', 'cost_unit', 'default_unit_price', 'is_active'])
+    );
+    return response()->json($item);
+});
+Route::put('/service-catalog/{id}', function (\Illuminate\Http\Request $request, $id) {
+    $item = \App\Models\ServiceCatalog::findOrFail($id);
+    $item->update($request->only(['name', 'category', 'default_unit_cost', 'cost_unit', 'default_unit_price', 'is_active']));
+    return response()->json($item);
+});
+Route::post('/service-catalog/seed-from-bookings', function () {
+    // Create catalog entries from existing booking_services concepts
+    $concepts = \App\Models\BookingService::select('concept')->distinct()->pluck('concept');
+    $created = 0;
+    foreach ($concepts as $name) {
+        if (!$name) continue;
+        \App\Models\ServiceCatalog::firstOrCreate(['name' => $name], ['category' => 'service']);
+        $created++;
+    }
+    return response()->json(['status' => 'ok', 'created' => $created]);
+});
 
 // Property Inventory
 Route::get('/properties/{propertyId}/inventory', [PropertyInventoryController::class, 'index']);

@@ -209,9 +209,24 @@ class ImportController extends Controller
                 foreach ($services as $s) {
                     $total = (float) preg_replace('/[^0-9.\-]/', '', $s['total'] ?? '0');
                     $unitPrice = (float) preg_replace('/[^0-9.\-]/', '', $s['price_label'] ?? '0');
+                    $concept = mb_substr($s['concept'] ?? '', 0, 200);
+
+                    // Link to service catalog and auto-populate cost
+                    $catalog = \App\Models\ServiceCatalog::where('name', $concept)->first();
+                    $unitCost = null;
+                    $costUnits = null;
+                    $totalCost = null;
+
+                    if ($catalog && $catalog->default_unit_cost) {
+                        $unitCost = $catalog->default_unit_cost;
+                        $catalogPrice = $catalog->default_unit_price ?: $unitPrice;
+                        $costUnits = $catalogPrice > 0 ? round($total / $catalogPrice, 2) : 1;
+                        $totalCost = round($unitCost * $costUnits, 2);
+                    }
+
                     $booking->services()->create([
                         'category' => $s['category'] ?? 'service',
-                        'concept' => mb_substr($s['concept'] ?? '', 0, 200),
+                        'concept' => $concept,
                         'price_label' => $s['price_label'] ?? null,
                         'quantity' => $s['quantity'] ?? null,
                         'tax' => $s['tax'] ?? null,
@@ -219,6 +234,10 @@ class ImportController extends Controller
                         'unit_price' => $unitPrice ?: null,
                         'currency' => str_contains($s['total'] ?? '', '€') ? 'EUR' : 'USD',
                         'charge_moment' => $s['charge_moment'] ?? null,
+                        'service_catalog_id' => $catalog?->id,
+                        'unit_cost' => $unitCost,
+                        'cost_units' => $costUnits,
+                        'total_cost' => $totalCost,
                     ]);
                 }
                 Log::info("Saved " . count($services) . " services for booking {$avantioId}");
