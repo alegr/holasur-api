@@ -86,7 +86,7 @@ class ApiController extends Controller
             $query->where('channel', $channel);
         }
 
-        $bookings = $query->orderByDesc('check_in')->get();
+        $bookings = $query->orderByDesc('created_at')->get();
 
         return response()->json([
             'data' => $bookings,
