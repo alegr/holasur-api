@@ -63,60 +63,25 @@ class ReportController extends Controller
         $rawData = json_decode($booking->raw_data, true) ?? [];
         $csv = $rawData['_csv'] ?? [];
 
-        // Revenue - full booking amount
-        $rent = $this->csvFloat($csv['Rent with VAT on top'] ?? $csv['Alquiler con IVA incluido'] ?? null);
-        $extras = $this->csvFloat($csv['Extras with VAT on top'] ?? $csv['Extras con IVA incluido'] ?? null);
+        // Revenue - full booking amount (support both EN and ES CSV column names)
+        $rent = $this->csvFloat($csv['Rent with VAT on top'] ?? $csv['Alquiler con IVA incluido'] ?? $csv['Alquiler con tasas'] ?? null);
+        $extras = $this->csvFloat($csv['Extras with VAT on top'] ?? $csv['Extras con IVA incluido'] ?? $csv['Extras con tasas'] ?? null);
         $grossTotal = (float) ($booking->total_amount ?? 0);
-        $csvGrossTotal = $this->csvFloat($csv['Booking total with tax'] ?? $csv['Total reserva con impuestos'] ?? null);
+        $csvGrossTotal = $this->csvFloat($csv['Booking total with tax'] ?? $csv['Total reserva con impuestos'] ?? $csv['Total reserva con tasas'] ?? null);
         if ($csvGrossTotal > 0) {
             $grossTotal = $csvGrossTotal;
         }
 
-        // Hola Sur commission on RENT only
+        // Get property data for commission
         $hsCommissionPercent = null;
-        $hsRentCommission = 0;
+        $property = null;
         if ($booking->property_id) {
             $property = DB::table('properties')->where('id', $booking->property_id)->first();
             $hsCommissionPercent = $property->hs_commission_percent ?? null;
-            if ($hsCommissionPercent && $rent > 0) {
-                $hsRentCommission = round($rent * $hsCommissionPercent / 100, 2);
-            }
-        }
-
-        // Extras revenue for HS: 100% by default, minus owner_return_percent from contract
-        $hsExtrasRevenue = $extras; // start with 100%
-        $ownerReturns = [];
-        if ($booking->property_id && $extras > 0) {
-            // Get property services with owner_return_percent
-            $propertyServices = DB::table('property_services')
-                ->where('property_id', $booking->property_id)
-                ->whereNotNull('owner_return_percent')
-                ->where('owner_return_percent', '>', 0)
-                ->get();
-
-            // Match booking services to property services for owner returns
-            $bookingServices = DB::table('booking_services')
-                ->where('booking_id', $id)
-                ->get();
-
-            foreach ($bookingServices as $bs) {
-                foreach ($propertyServices as $ps) {
-                    if (mb_strtolower(trim($bs->concept)) === mb_strtolower(trim($ps->name)) && (float) $bs->total > 0) {
-                        $returnAmount = round((float) $bs->total * (float) $ps->owner_return_percent / 100, 2);
-                        $hsExtrasRevenue -= $returnAmount;
-                        $ownerReturns[] = [
-                            'service' => $bs->concept,
-                            'total' => (float) $bs->total,
-                            'owner_percent' => (float) $ps->owner_return_percent,
-                            'owner_amount' => $returnAmount,
-                        ];
-                    }
-                }
-            }
         }
 
         // Platform commission (Airbnb/Booking fee)
-        $platformCommission = $this->csvFloat($csv['Portal/Intermediary Commission: calculated commission'] ?? $csv['Comisión portal/intermediario: comisión calculada'] ?? null);
+        $platformCommission = $this->csvFloat($csv['Portal/Intermediary Commission: calculated commission'] ?? $csv['Comisión portal/intermediario: comisión calculada'] ?? $csv['Comisión Portal/Intermediario: Comisión calculada'] ?? null);
 
         // Costs - direct costs from purchases
         $directCostsQuery = DB::table('purchases')
@@ -172,11 +137,51 @@ class ReportController extends Controller
             $extras = $serviceRevenue;
         }
 
+        // Calculate rent from gross if CSV didn't have it
+        if ($rent <= 0 && $grossTotal > 0) {
+            $rent = $grossTotal - $extras;
+        }
+
+        // HS commission on rent only
+        $hsRentCommission = 0;
+        if ($hsCommissionPercent && $rent > 0) {
+            $hsRentCommission = round($rent * $hsCommissionPercent / 100, 2);
+        }
+
+        // Extras revenue for HS: 100% by default, minus owner_return_percent from contract
+        $hsExtrasRevenue = $extras;
+        $ownerReturns = [];
+        if ($booking->property_id && $extras > 0) {
+            $propertyServices = DB::table('property_services')
+                ->where('property_id', $booking->property_id)
+                ->whereNotNull('owner_return_percent')
+                ->where('owner_return_percent', '>', 0)
+                ->get();
+
+            $bookingServices = DB::table('booking_services')
+                ->where('booking_id', $id)
+                ->get();
+
+            foreach ($bookingServices as $bs) {
+                foreach ($propertyServices as $ps) {
+                    if (mb_strtolower(trim($bs->concept)) === mb_strtolower(trim($ps->name)) && (float) $bs->total > 0) {
+                        $returnAmount = round((float) $bs->total * (float) $ps->owner_return_percent / 100, 2);
+                        $hsExtrasRevenue -= $returnAmount;
+                        $ownerReturns[] = [
+                            'service' => $bs->concept,
+                            'total' => (float) $bs->total,
+                            'owner_percent' => (float) $ps->owner_return_percent,
+                            'owner_amount' => $returnAmount,
+                        ];
+                    }
+                }
+            }
+        }
+
         // Total costs = service costs + purchases
         $totalCosts = $serviceCostsTotal + $directCostsTotal;
 
         // Margins from Hola Sur's perspective
-        // HS revenue = commission on rent + extras revenue (minus owner returns) - costs
         $hsRevenue = $hsRentCommission + $hsExtrasRevenue;
         $netMargin = $hsRevenue - $totalCosts;
         $marginPercent = $hsRevenue > 0 ? round($netMargin / $hsRevenue * 100, 2) : 0;
