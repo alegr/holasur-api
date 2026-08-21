@@ -207,8 +207,20 @@ class ImportController extends Controller
 
                 $booking->services()->delete();
                 foreach ($services as $s) {
-                    $total = (float) preg_replace('/[^0-9.\-]/', '', $s['total'] ?? '0');
-                    $unitPrice = (float) preg_replace('/[^0-9.\-]/', '', $s['price_label'] ?? '0');
+                    // Parse amount handling both EN (1,234.56) and ES (1.234,56) formats
+                    $parseAmount = function($str) {
+                        $str = preg_replace('/[^0-9.,\-]/', '', $str ?? '0');
+                        // If has comma as last separator, it's decimal (Spanish format)
+                        if (preg_match('/,\d{1,2}$/', $str)) {
+                            $str = str_replace('.', '', $str); // remove thousands dots
+                            $str = str_replace(',', '.', $str); // comma → decimal point
+                        } else {
+                            $str = str_replace(',', '', $str); // remove thousands commas
+                        }
+                        return (float) $str;
+                    };
+                    $total = $parseAmount($s['total'] ?? '0');
+                    $unitPrice = $parseAmount($s['price_label'] ?? '0');
                     $concept = mb_substr($s['concept'] ?? '', 0, 200);
 
                     // Link to service catalog and auto-populate cost
@@ -238,6 +250,7 @@ class ImportController extends Controller
                         'unit_cost' => $unitCost,
                         'cost_units' => $costUnits,
                         'total_cost' => $totalCost,
+                        'is_from_avantio' => true,
                     ]);
                 }
                 Log::info("Saved " . count($services) . " services for booking {$avantioId}");

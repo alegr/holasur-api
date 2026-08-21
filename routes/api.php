@@ -30,6 +30,26 @@ Route::get('/import/logs', [ImportController::class, 'logs']);
 // Data endpoints
 Route::get('/properties', [ApiController::class, 'properties']);
 Route::get('/properties/{id}', [ApiController::class, 'property']);
+Route::get('/properties/by-avantio-id/{avantioId}', function ($avantioId) {
+    $property = \App\Models\Property::where('avantio_id', $avantioId)->first();
+    if (!$property) return response()->json(['error' => 'Not found'], 404);
+    return response()->json($property);
+});
+Route::get('/properties/{id}/services', fn ($id) => \App\Models\PropertyService::where('property_id', $id)->orderBy('name')->get());
+Route::post('/properties/{id}/services', function (\Illuminate\Http\Request $request, $id) {
+    $data = $request->all();
+    $data['property_id'] = $id;
+    $service = \App\Models\PropertyService::updateOrCreate(
+        ['property_id' => $id, 'name' => $data['name']],
+        collect($data)->only(['service_catalog_id', 'is_applicable', 'is_personalized', 'owner_return_percent', 'is_from_avantio'])->toArray()
+    );
+    return response()->json($service);
+});
+Route::put('/properties/{id}', function (\Illuminate\Http\Request $request, $id) {
+    $property = \App\Models\Property::findOrFail($id);
+    $property->update($request->only(['hs_commission_percent', 'contract_data']));
+    return response()->json($property);
+});
 Route::get('/bookings', [ApiController::class, 'bookings']);
 Route::get('/bookings/{id}', [ApiController::class, 'booking']);
 Route::get('/bookings/{id}/services', fn ($id) => \App\Models\BookingService::where('booking_id', $id)->get());
@@ -79,6 +99,35 @@ Route::put('/service-catalog/{id}', function (\Illuminate\Http\Request $request,
     $item = \App\Models\ServiceCatalog::findOrFail($id);
     $item->update($request->only(['name', 'category', 'default_unit_cost', 'cost_unit', 'default_unit_price', 'is_active']));
     return response()->json($item);
+});
+Route::delete('/service-catalog/{id}', function ($id) {
+    $item = \App\Models\ServiceCatalog::findOrFail($id);
+    if ($item->is_from_avantio) {
+        return response()->json(['error' => 'No se pueden eliminar servicios importados de Avantio'], 403);
+    }
+    $item->delete();
+    return response()->json(['status' => 'ok']);
+});
+Route::post('/service-catalog/import-avantio', function (\Illuminate\Http\Request $request) {
+    $services = $request->input('data', []);
+    $created = 0;
+    $updated = 0;
+    foreach ($services as $s) {
+        $name = mb_substr(trim($s['name'] ?? ''), 0, 200);
+        if (!$name || strlen($name) < 2) continue;
+        try {
+            $item = \App\Models\ServiceCatalog::firstOrNew(['name' => $name]);
+            $item->is_from_avantio = true;
+            $item->category = $s['category'] ?? 'service';
+            if (!$item->exists) $created++;
+            else $updated++;
+            $item->save();
+        } catch (\Throwable $e) {
+            // Skip invalid entries
+            continue;
+        }
+    }
+    return response()->json(['status' => 'ok', 'created' => $created, 'updated' => $updated]);
 });
 Route::post('/service-catalog/seed-from-bookings', function () {
     // Create catalog entries from existing booking_services concepts

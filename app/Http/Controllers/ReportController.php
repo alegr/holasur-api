@@ -63,17 +63,60 @@ class ReportController extends Controller
         $rawData = json_decode($booking->raw_data, true) ?? [];
         $csv = $rawData['_csv'] ?? [];
 
-        // Revenue
-        $rent = $this->csvFloat($csv['Rent with VAT on top'] ?? null);
-        $extras = $this->csvFloat($csv['Extras with VAT on top'] ?? null);
+        // Revenue - full booking amount
+        $rent = $this->csvFloat($csv['Rent with VAT on top'] ?? $csv['Alquiler con IVA incluido'] ?? null);
+        $extras = $this->csvFloat($csv['Extras with VAT on top'] ?? $csv['Extras con IVA incluido'] ?? null);
         $grossTotal = (float) ($booking->total_amount ?? 0);
-        $csvGrossTotal = $this->csvFloat($csv['Booking total with tax'] ?? null);
+        $csvGrossTotal = $this->csvFloat($csv['Booking total with tax'] ?? $csv['Total reserva con impuestos'] ?? null);
         if ($csvGrossTotal > 0) {
             $grossTotal = $csvGrossTotal;
         }
 
-        // Costs - platform commission
-        $platformCommission = $this->csvFloat($csv['Portal/Intermediary Commission: calculated commission'] ?? null);
+        // Hola Sur commission on RENT only
+        $hsCommissionPercent = null;
+        $hsRentCommission = 0;
+        if ($booking->property_id) {
+            $property = DB::table('properties')->where('id', $booking->property_id)->first();
+            $hsCommissionPercent = $property->hs_commission_percent ?? null;
+            if ($hsCommissionPercent && $rent > 0) {
+                $hsRentCommission = round($rent * $hsCommissionPercent / 100, 2);
+            }
+        }
+
+        // Extras revenue for HS: 100% by default, minus owner_return_percent from contract
+        $hsExtrasRevenue = $extras; // start with 100%
+        $ownerReturns = [];
+        if ($booking->property_id && $extras > 0) {
+            // Get property services with owner_return_percent
+            $propertyServices = DB::table('property_services')
+                ->where('property_id', $booking->property_id)
+                ->whereNotNull('owner_return_percent')
+                ->where('owner_return_percent', '>', 0)
+                ->get();
+
+            // Match booking services to property services for owner returns
+            $bookingServices = DB::table('booking_services')
+                ->where('booking_id', $id)
+                ->get();
+
+            foreach ($bookingServices as $bs) {
+                foreach ($propertyServices as $ps) {
+                    if (mb_strtolower(trim($bs->concept)) === mb_strtolower(trim($ps->name)) && (float) $bs->total > 0) {
+                        $returnAmount = round((float) $bs->total * (float) $ps->owner_return_percent / 100, 2);
+                        $hsExtrasRevenue -= $returnAmount;
+                        $ownerReturns[] = [
+                            'service' => $bs->concept,
+                            'total' => (float) $bs->total,
+                            'owner_percent' => (float) $ps->owner_return_percent,
+                            'owner_amount' => $returnAmount,
+                        ];
+                    }
+                }
+            }
+        }
+
+        // Platform commission (Airbnb/Booking fee)
+        $platformCommission = $this->csvFloat($csv['Portal/Intermediary Commission: calculated commission'] ?? $csv['Comisión portal/intermediario: comisión calculada'] ?? null);
 
         // Costs - direct costs from purchases
         $directCostsQuery = DB::table('purchases')
@@ -98,20 +141,45 @@ class ReportController extends Controller
             ->values()
             ->toArray();
 
-        // Payments from CSV
-        $paid = $this->csvFloat($csv['Paid'] ?? null);
-        $pending = $this->csvFloat($csv['Pending'] ?? null);
+        // Costs - service costs from booking_services
+        $serviceCostsTotal = (float) DB::table('booking_services')
+            ->where('booking_id', $id)
+            ->whereNotNull('total_cost')
+            ->sum('total_cost');
 
-        // Payments from avantio_payments
-        $receivedPayments = (float) DB::table('avantio_payments')
-            ->where('booking_reference', $booking->avantio_reference)
-            ->where('payment_type', 'received')
-            ->sum('amount');
+        $serviceCostsBreakdown = DB::table('booking_services')
+            ->where('booking_id', $id)
+            ->whereNotNull('total_cost')
+            ->where('total_cost', '>', 0)
+            ->select('concept as category')
+            ->selectRaw('COALESCE(total_cost, 0) as amount')
+            ->orderByDesc('total_cost')
+            ->get()
+            ->map(fn($row) => [
+                'category' => $row->category,
+                'amount' => (float) $row->amount,
+            ])
+            ->values()
+            ->toArray();
 
-        // Margins
-        $grossMargin = $grossTotal - $platformCommission;
-        $netMargin = $grossMargin - $directCostsTotal;
-        $marginPercent = $grossTotal > 0 ? round($netMargin / $grossTotal * 100, 2) : 0;
+        // Service revenue from booking_services (extras total)
+        $serviceRevenue = (float) DB::table('booking_services')
+            ->where('booking_id', $id)
+            ->sum('total');
+
+        // Use service revenue for extras if CSV doesn't have it
+        if ($extras <= 0 && $serviceRevenue > 0) {
+            $extras = $serviceRevenue;
+        }
+
+        // Total costs = service costs + purchases
+        $totalCosts = $serviceCostsTotal + $directCostsTotal;
+
+        // Margins from Hola Sur's perspective
+        // HS revenue = commission on rent + extras revenue (minus owner returns) - costs
+        $hsRevenue = $hsRentCommission + $hsExtrasRevenue;
+        $netMargin = $hsRevenue - $totalCosts;
+        $marginPercent = $hsRevenue > 0 ? round($netMargin / $hsRevenue * 100, 2) : 0;
 
         return response()->json([
             'data' => [
@@ -127,19 +195,22 @@ class ReportController extends Controller
                     'rent' => $rent,
                     'extras' => $extras,
                     'gross_total' => $grossTotal,
+                    'hs_commission_percent' => $hsCommissionPercent,
+                    'hs_rent_commission' => $hsRentCommission,
+                    'hs_extras_revenue' => $hsExtrasRevenue,
+                    'owner_returns' => $ownerReturns,
+                    'hs_total_revenue' => $hsRevenue,
+                    'platform_commission' => $platformCommission,
                 ],
                 'costs' => [
-                    'platform_commission' => $platformCommission,
+                    'service_costs' => $serviceCostsTotal,
+                    'service_costs_breakdown' => $serviceCostsBreakdown,
                     'direct_costs' => $directCostsTotal,
                     'direct_costs_breakdown' => $directCostsBreakdown,
-                ],
-                'payments' => [
-                    'paid' => $paid,
-                    'pending' => $pending,
-                    'received' => $receivedPayments,
+                    'total_costs' => $totalCosts,
                 ],
                 'margin' => [
-                    'gross_margin' => $grossMargin,
+                    'hs_revenue' => $hsRevenue,
                     'net_margin' => $netMargin,
                     'margin_percent' => $marginPercent,
                 ],

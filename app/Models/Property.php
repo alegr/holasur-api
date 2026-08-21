@@ -22,6 +22,8 @@ class Property extends Model
         'beds',
         'max_guests',
         'status',
+        'hs_commission_percent',
+        'contract_data',
         'raw_data',
     ];
 
@@ -29,6 +31,8 @@ class Property extends Model
     {
         return [
             'size_m2' => 'decimal:2',
+            'hs_commission_percent' => 'decimal:2',
+            'contract_data' => 'array',
             'raw_data' => 'array',
         ];
     }
@@ -56,5 +60,10 @@ class Property extends Model
     public function inventory(): HasMany
     {
         return $this->hasMany(PropertyInventory::class);
+    }
+
+    public function propertyServices(): HasMany
+    {
+        return $this->hasMany(PropertyService::class);
     }
 }
