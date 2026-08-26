@@ -108,6 +108,7 @@ class QuickCostController extends Controller
                 'id' => $p->id,
                 'date' => $p->receipt_date?->format('Y-m-d'),
                 'category' => $firstItem?->costCategory?->name ?? '--',
+                'category_id' => $firstItem?->cost_category_id,
                 'amount' => $p->total,
                 'currency' => $p->currency,
                 'note' => $p->notes,
@@ -116,5 +117,52 @@ class QuickCostController extends Controller
         });
 
         return response()->json(['data' => $data]);
+    }
+
+    /**
+     * PUT /api/quick-cost/{id}
+     */
+    public function update(Request $request, int $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'category_id' => 'nullable|exists:cost_categories,id',
+            'amount' => 'nullable|numeric|min:0.01',
+            'note' => 'nullable|string|max:1000',
+        ]);
+
+        $purchase = Purchase::findOrFail($id);
+        $amount = isset($validated['amount']) ? round((float) $validated['amount'], 2) : null;
+
+        if ($amount !== null) {
+            $purchase->update(['subtotal' => $amount, 'total' => $amount, 'notes' => $validated['note'] ?? $purchase->notes]);
+            $item = $purchase->items()->first();
+            if ($item) {
+                $item->update(['unit_price' => $amount, 'total' => $amount]);
+            }
+        }
+        if (array_key_exists('note', $validated)) {
+            $purchase->update(['notes' => $validated['note']]);
+        }
+        if (!empty($validated['category_id'])) {
+            $category = CostCategory::findOrFail($validated['category_id']);
+            $item = $purchase->items()->first();
+            if ($item) {
+                $item->update(['cost_category_id' => $category->id, 'description' => $category->name]);
+            }
+        }
+
+        return response()->json(['data' => $purchase->fresh()]);
+    }
+
+    /**
+     * DELETE /api/quick-cost/{id}
+     */
+    public function destroy(int $id): JsonResponse
+    {
+        $purchase = Purchase::findOrFail($id);
+        $purchase->items()->delete();
+        $purchase->delete();
+
+        return response()->json(['status' => 'ok']);
     }
 }

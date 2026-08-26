@@ -166,6 +166,8 @@ Route::put('/expenses/{id}', [CostController::class, 'expenseUpdate']);
 // Quick cost (simplified inline cost entry)
 Route::post('/quick-cost', [QuickCostController::class, 'store']);
 Route::get('/quick-cost/recent', [QuickCostController::class, 'recent']);
+Route::put('/quick-cost/{id}', [QuickCostController::class, 'update']);
+Route::delete('/quick-cost/{id}', [QuickCostController::class, 'destroy']);
 
 // Batch costs (monthly cost entry)
 Route::get('/batch-costs', [BatchCostController::class, 'batchIndex']);
